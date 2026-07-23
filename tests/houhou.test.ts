@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { task } from '../src/task'
+import { TaskTimeoutError } from '../src/errors'
 import type { Task } from '../src/types'
 
 // type-level tests (validated by tsc, skipped in runtime)
@@ -125,6 +126,50 @@ describe('retry', () => {
     await expect(wrapped()).rejects.toThrow('fail')
     expect(fn).toHaveBeenCalledTimes(1)
   })
+
+  it('throws RangeError when attempts < 1', () => {
+    expect(() => task(async () => {}).retry(0)).toThrow(RangeError)
+    expect(() => task(async () => {}).retry({ attempts: 0 })).toThrow(RangeError)
+    expect(() => task(async () => {}).retry({ attempts: -1 })).toThrow(RangeError)
+  })
+
+  it('uses exponential backoff', async () => {
+    vi.useFakeTimers()
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('fail'))
+      .mockRejectedValueOnce(new Error('fail'))
+      .mockResolvedValueOnce('ok')
+    const wrapped = task(fn).retry({ attempts: 3, delay: 100, backoff: 'exponential' })
+    const promise = wrapped()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(fn).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(200)
+    expect(fn).toHaveBeenCalledTimes(3)
+    await expect(promise).resolves.toBe('ok')
+    vi.useRealTimers()
+  })
+
+  it('works with jitter enabled', async () => {
+    vi.useFakeTimers()
+    const fn = vi.fn().mockRejectedValueOnce(new Error('fail')).mockResolvedValueOnce('ok')
+    const wrapped = task(fn).retry({ attempts: 2, delay: 100, jitter: true })
+    const promise = wrapped()
+    await vi.advanceTimersByTimeAsync(200)
+    await expect(promise).resolves.toBe('ok')
+    expect(fn).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
+  })
+
+  it('stops retry loop when external signal is aborted', async () => {
+    const ac = new AbortController()
+    const fn = vi.fn().mockRejectedValue(new Error('fail'))
+    const wrapped = task(fn).retry({ attempts: 10, delay: 100 })
+
+    setTimeout(() => ac.abort(new Error('user cancelled')), 30)
+    await expect(wrapped('url', ac.signal)).rejects.toThrow('user cancelled')
+    expect(fn.mock.calls.length).toBeLessThan(10)
+  }, 5000)
 })
 
 describe('timeout', () => {
@@ -153,6 +198,45 @@ describe('timeout', () => {
     const wrapped = task(fn).timeout(5000)
     await expect(wrapped()).resolves.toBe(42)
   })
+
+  it('throws RangeError when ms < 1', () => {
+    expect(() => task(async () => {}).timeout(0)).toThrow(RangeError)
+    expect(() => task(async () => {}).timeout(-1)).toThrow(RangeError)
+  })
+
+  it('stores ms on TaskTimeoutError', async () => {
+    const fn = vi.fn().mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 200)))
+    const timeoutMs = 20
+    const wrapped = task(fn).timeout(timeoutMs)
+    try {
+      await wrapped()
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(TaskTimeoutError)
+      expect((error as TaskTimeoutError).ms).toBe(timeoutMs)
+    }
+  })
+
+  it('passes AbortSignal that is aborted on timeout', async () => {
+    let receivedSignal: AbortSignal | undefined
+    const fn = vi.fn().mockImplementation((_url: string, signal?: AbortSignal) => {
+      receivedSignal = signal
+      return new Promise((resolve) => setTimeout(resolve, 200))
+    })
+    const wrapped = task(fn).timeout(50)
+    await expect(wrapped('url')).rejects.toThrow('timed out')
+    expect(receivedSignal).toBeInstanceOf(AbortSignal)
+    expect(receivedSignal?.aborted).toBe(true)
+  }, 5000)
+
+  it('cancels timer and rejects when external signal aborts', async () => {
+    const ac = new AbortController()
+    const fn = vi.fn().mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 200)))
+    const wrapped = task(fn).timeout(5000)
+
+    setTimeout(() => ac.abort(new Error('user cancelled')), 10)
+    await expect(wrapped('url', ac.signal)).rejects.toThrow('user cancelled')
+    expect(fn).toHaveBeenCalledTimes(1)
+  }, 5000)
 })
 
 describe('fallback', () => {
@@ -195,6 +279,17 @@ describe('fallback', () => {
     const result = await wrapped(1)
     expect(typeof result === 'string' || typeof result === 'number').toBe(true)
   })
+
+  it('rejects immediately when signal is already aborted', async () => {
+    const ac = new AbortController()
+    ac.abort(new Error('cancelled'))
+    const fn = vi.fn()
+    const fallback = vi.fn()
+    const wrapped = task(fn).fallback(fallback)
+    await expect(wrapped(ac.signal)).rejects.toThrow('cancelled')
+    expect(fn).not.toHaveBeenCalled()
+    expect(fallback).not.toHaveBeenCalled()
+  })
 })
 
 describe('delay', () => {
@@ -225,6 +320,21 @@ describe('delay', () => {
     const wrapped = task(fn).delay(10)
     await expect(wrapped()).rejects.toThrow(error)
   })
+
+  it('throws RangeError when ms < 1', () => {
+    expect(() => task(async () => {}).delay(0)).toThrow(RangeError)
+    expect(() => task(async () => {}).delay(-1)).toThrow(RangeError)
+  })
+
+  it('aborts delay when external signal is aborted', async () => {
+    const ac = new AbortController()
+    const fn = vi.fn()
+    const wrapped = task(fn).delay(5000)
+
+    setTimeout(() => ac.abort(new Error('cancelled')), 10)
+    await expect(wrapped(ac.signal)).rejects.toThrow('cancelled')
+    expect(fn).not.toHaveBeenCalled()
+  }, 5000)
 })
 
 describe('circuit breaker', () => {
@@ -292,6 +402,93 @@ describe('circuit breaker', () => {
     await expect(wrapped()).rejects.toThrow('Circuit breaker is open')
   }, 5000)
 
+  it('throws RangeError when failureThreshold < 1', () => {
+    expect(() =>
+      task(async () => {}).circuitBreaker({
+        failureThreshold: 0,
+        successThreshold: 1,
+        resetTimeout: 1000
+      })
+    ).toThrow(RangeError)
+  })
+
+  it('throws RangeError when successThreshold < 1', () => {
+    expect(() =>
+      task(async () => {}).circuitBreaker({
+        failureThreshold: 1,
+        successThreshold: 0,
+        resetTimeout: 1000
+      })
+    ).toThrow(RangeError)
+  })
+
+  it('throws RangeError when resetTimeout < 1', () => {
+    expect(() =>
+      task(async () => {}).circuitBreaker({
+        failureThreshold: 1,
+        successThreshold: 1,
+        resetTimeout: 0
+      })
+    ).toThrow(RangeError)
+  })
+
+  it('requires multiple successes in half-open to close', async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('fail'))
+      .mockResolvedValueOnce('ok1')
+      .mockResolvedValueOnce('ok2')
+      .mockRejectedValueOnce(new Error('fail2'))
+    const wrapped = task(fn).circuitBreaker({
+      failureThreshold: 1,
+      successThreshold: 2,
+      resetTimeout: 50
+    })
+
+    await expect(wrapped()).rejects.toThrow('fail')
+    await expect(wrapped()).rejects.toThrow('Circuit breaker is open')
+
+    await waitForHalfOpen(60)
+
+    await expect(wrapped()).resolves.toBe('ok1')
+    await expect(wrapped()).resolves.toBe('ok2')
+    await expect(wrapped()).rejects.toThrow('fail2')
+    await expect(wrapped()).rejects.toThrow('Circuit breaker is open')
+  }, 10000)
+
+  it('rejects immediately when signal is already aborted', async () => {
+    const ac = new AbortController()
+    ac.abort(new Error('cancelled'))
+    const fn = vi.fn()
+    const wrapped = task(fn).circuitBreaker({
+      failureThreshold: 3,
+      successThreshold: 1,
+      resetTimeout: 1000
+    })
+    await expect(wrapped(ac.signal)).rejects.toThrow('cancelled')
+    expect(fn).not.toHaveBeenCalled()
+  })
+
+  it('maintains independent state across instances', async () => {
+    const fn1 = vi.fn().mockRejectedValue(new Error('fail'))
+    const fn2 = vi.fn().mockRejectedValue(new Error('fail'))
+    const cb1 = task(fn1).circuitBreaker({
+      failureThreshold: 1,
+      successThreshold: 1,
+      resetTimeout: 5000
+    })
+    const cb2 = task(fn2).circuitBreaker({
+      failureThreshold: 1,
+      successThreshold: 1,
+      resetTimeout: 5000
+    })
+
+    await expect(cb1()).rejects.toThrow('fail')
+    await expect(cb1()).rejects.toThrow('Circuit breaker is open')
+    await expect(cb2()).rejects.toThrow('fail')
+    expect(fn2).toHaveBeenCalledTimes(1)
+  })
+
   it('resets failure count on success', async () => {
     const fn = vi
       .fn()
@@ -353,6 +550,25 @@ describe('lock policies', () => {
       ;(b as Task<[number], number>).retry({ attempts: 1 })
     }).toThrow()
   })
+})
+
+describe('composition', () => {
+  it('timeout wraps retry when configured after retry', async () => {
+    const fn = vi.fn().mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 200)))
+    const wrapped = task(fn).retry({ attempts: 3, delay: 10 }).timeout(50)
+    await expect(wrapped()).rejects.toThrow('timed out')
+    expect(fn).toHaveBeenCalledTimes(1)
+    // Wait to ensure no zombie retries fire after timeout
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    expect(fn).toHaveBeenCalledTimes(1)
+  }, 10000)
+
+  it('retry wraps timeout when configured after timeout', async () => {
+    const fn = vi.fn().mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 200)))
+    const wrapped = task(fn).timeout(50).retry({ attempts: 3, delay: 10 })
+    await expect(wrapped()).rejects.toThrow('timed out')
+    expect(fn).toHaveBeenCalledTimes(3)
+  }, 10000)
 })
 
 async function waitForHalfOpen(ms: number): Promise<void> {

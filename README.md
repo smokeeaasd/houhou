@@ -83,9 +83,80 @@ Wait before execution.
 task(syncData).delay(1000)
 ```
 
+## Policy ordering
+
+Policies are **nested**: the last method called wraps the previous ones. The execution order is the reverse of the declaration order.
+
+```ts
+task(fn).retry(3).timeout(1000)
+// → timeout wraps retry
+// → function runs → retry on failure (up to 3 times) → timeout of 1s total
+// → if the timeout fires, there are no more retries
+```
+
+```ts
+task(fn).timeout(1000).retry(3)
+// → retry wraps timeout
+// → function runs → timeout of 1s → if timeout fires, retry catches it
+// → the whole cycle repeats up to 3 times
+```
+
+## Type safety
+
+Each policy exposes a fluent method on the returned `Task`. Calling a method **locks** it at the type level — TypeScript will prevent you from configuring the same policy twice:
+
+```ts
+const t = task(fn).retry(3)
+
+// @ts-expect-error — 'retry' is already locked
+t.retry(2)
+```
+
+The same lock is enforced at runtime — a second call throws an error.
+
+## Cancellation
+
+houhou uses `AbortController` to cancel operations when a timeout fires or an external signal is provided. The `AbortSignal` is passed as the **last argument** to your wrapped function — consuming it is optional.
+
+```ts
+// Consume the signal to cancel real resources
+const fn = (url: string, signal?: AbortSignal) => fetch(url, { signal })
+
+task(fn).timeout(5000)('https://api.example.com')
+// → fn receives merged AbortSignal
+// → if timeout fires → controller.abort() → fetch is cancelled
+```
+
+### Passing an external signal
+
+If you need manual cancellation alongside the policies, pass an `AbortSignal` as the last call argument. It is merged with any internal signals via `AbortSignal.any()`.
+
+```ts
+const controller = new AbortController()
+const promise = task(fn).timeout(5000).retry(3)('url', controller.signal)
+
+// Later — cancels both the timeout timer and the function
+controller.abort()
+```
+
+### What is cancelled
+
+| What                       | Cancelled?                                                   |
+| -------------------------- | ------------------------------------------------------------ |
+| `fn` execution             | ✅ If fn consumes the signal (e.g. `fetch(url, { signal })`) |
+| Delay between retries      | ✅ Stops retry loop immediately                              |
+| Delay policy               | ✅ Aborted, fn is not called                                 |
+| Timeout's own timer        | ✅ Cleared when external signal aborts                       |
+| Circuit breaker / Fallback | ✅ `signal.aborted` check at entry                           |
+
+### What is NOT cancelled
+
+- `fn` that ignores the signal (no zombie prevention if you choose not to opt in)
+- Code already executing inside `fn` when signal fires (cooperative cancellation only)
+
 ## Composition
 
-Policies chain fluently and can be combined in any order. Each policy can be configured only once per task — attempting to set it again throws at runtime and is prevented at the type level.
+Policies chain fluently and can be combined in any order.
 
 ```ts
 const resilient = task(callApi)
@@ -98,7 +169,7 @@ const resilient = task(callApi)
 
 ## API
 
-### `task(name, fn)`
+### `task(fn)`
 
 Wrap a function with resilience policies. Returns a callable with the same signature plus chainable methods.
 
