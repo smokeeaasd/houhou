@@ -1,7 +1,9 @@
 import type { RetryOptions } from '../types'
+import { delay } from './utils'
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function getSignal(args: unknown[]): AbortSignal | undefined {
+  const last = args.length > 0 ? args[args.length - 1] : undefined
+  return last instanceof AbortSignal ? last : undefined
 }
 
 function calculateBackoff(attempt: number, options: RetryOptions): number {
@@ -16,19 +18,28 @@ export function withRetry<TArgs extends unknown[], TReturn>(
   options: RetryOptions
 ): (...args: TArgs) => Promise<Awaited<TReturn>> {
   if (options.attempts < 1) {
-    throw new RangeError('attempts must be at least 1')
+    throw new RangeError('"attempts" must be at least 1')
   }
 
   const wrapped = async (...args: TArgs): Promise<Awaited<TReturn>> => {
+    const signal = getSignal(args)
     let lastError: unknown
 
     for (let attempt = 1; attempt <= options.attempts; attempt++) {
+      if (signal?.aborted) {
+        throw signal.reason
+      }
+
       try {
         return (await fn(...args)) as Awaited<TReturn>
       } catch (error: unknown) {
         lastError = error
         if (attempt < options.attempts) {
-          await delay(calculateBackoff(attempt, options))
+          try {
+            await delay(calculateBackoff(attempt, options), signal)
+          } catch {
+            throw signal!.reason
+          }
         }
       }
     }

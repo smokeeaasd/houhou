@@ -18,6 +18,9 @@
     "url": "https://github.com/smokeeaasd/houhou/issues"
   },
   "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
   "author": "smokeeaasd",
   "repository": {
     "type": "git",
