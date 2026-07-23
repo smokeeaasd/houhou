@@ -98,7 +98,7 @@ const resilient = task(callApi)
 
 ## API
 
-### `task(name, fn)`
+### `task(fn)`
 
 Wrap a function with resilience policies. Returns a callable with the same signature plus chainable methods.
 
