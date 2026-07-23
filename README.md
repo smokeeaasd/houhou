@@ -120,8 +120,7 @@ houhou uses `AbortController` to cancel operations when a timeout fires or an ex
 
 ```ts
 // Consume the signal to cancel real resources
-const fn = (url: string, signal?: AbortSignal) =>
-  fetch(url, { signal })
+const fn = (url: string, signal?: AbortSignal) => fetch(url, { signal })
 
 task(fn).timeout(5000)('https://api.example.com')
 // → fn receives merged AbortSignal
@@ -134,9 +133,7 @@ If you need manual cancellation alongside the policies, pass an `AbortSignal` as
 
 ```ts
 const controller = new AbortController()
-const promise = task(fn)
-  .timeout(5000)
-  .retry(3)('url', controller.signal)
+const promise = task(fn).timeout(5000).retry(3)('url', controller.signal)
 
 // Later — cancels both the timeout timer and the function
 controller.abort()
@@ -144,13 +141,13 @@ controller.abort()
 
 ### What is cancelled
 
-| What | Cancelled? |
-|------|-----------|
-| `fn` execution | ✅ If fn consumes the signal (e.g. `fetch(url, { signal })`) |
-| Delay between retries | ✅ Stops retry loop immediately |
-| Delay policy | ✅ Aborted, fn is not called |
-| Timeout's own timer | ✅ Cleared when external signal aborts |
-| Circuit breaker / Fallback | ✅ `signal.aborted` check at entry |
+| What                       | Cancelled?                                                   |
+| -------------------------- | ------------------------------------------------------------ |
+| `fn` execution             | ✅ If fn consumes the signal (e.g. `fetch(url, { signal })`) |
+| Delay between retries      | ✅ Stops retry loop immediately                              |
+| Delay policy               | ✅ Aborted, fn is not called                                 |
+| Timeout's own timer        | ✅ Cleared when external signal aborts                       |
+| Circuit breaker / Fallback | ✅ `signal.aborted` check at entry                           |
 
 ### What is NOT cancelled
 
