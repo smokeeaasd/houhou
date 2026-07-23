@@ -60,6 +60,96 @@ export interface CircuitBreakerOptions {
 }
 
 /**
+ * Shape of the policy methods exposed on a {@link Task}.
+ * Extracted as a standalone type so that `PolicyName` can
+ * be derived automatically via `keyof`, keeping the lock
+ * keys in sync with the method names.
+ */
+export type TaskMethods<TArgs extends unknown[], TReturn, TLocked extends PolicyName> = {
+  /**
+   * Retry the wrapped function on failure.
+   *
+   * @param attempts - Shortcut for `{ attempts }`.
+   *
+   * @example
+   * task(fn).retry(3)
+   */
+  retry(attempts: number): Task<TArgs, TReturn, TLocked | 'retry'>
+
+  /**
+   * Retry the wrapped function on failure with full options.
+   *
+   * @param options - Retry configuration (attempts, backoff, jitter, delay).
+   *
+   * @example
+   * task(fn).retry({
+   *   attempts: 3,
+   *   backoff: "exponential",
+   *   jitter: true
+   * })
+   */
+  retry(options: RetryOptions): Task<TArgs, TReturn, TLocked | 'retry'>
+
+  /**
+   * Reject if the wrapped function does not complete in time.
+   *
+   * @param ms - Timeout in milliseconds.
+   * @throws {@link TaskTimeoutError} when the time elapses.
+   *
+   * @example
+   * task(fn).timeout(5000)
+   */
+  timeout(ms: number): Task<TArgs, TReturn, TLocked | 'timeout'>
+
+  /**
+   * Provide an alternative function to run when the main one fails.
+   *
+   * @param fn - Fallback function (receives the same arguments).
+   *
+   * @example
+   * task(riskyOp).fallback(() => defaultValue)
+   */
+  fallback<TFallback>(
+    fn: (...args: TArgs) => TFallback
+  ): Task<TArgs, TReturn | Awaited<TFallback>, TLocked | 'fallback'>
+
+  /**
+   * Wait a fixed amount of time before executing the wrapped function.
+   *
+   * @param ms - Delay in milliseconds.
+   *
+   * @example
+   * task(fn).delay(1000)
+   */
+  delay(ms: number): Task<TArgs, TReturn, TLocked | 'delay'>
+
+  /**
+   * Protect the wrapped function with a circuit breaker.
+   *
+   * Prevents repeated calls to an unhealthy service by tracking
+   * failures. States: closed → open → half-open → closed.
+   *
+   * @param options - Circuit breaker configuration.
+   * @throws {@link CircuitBreakerOpenError} when the circuit is open.
+   *
+   * @example
+   * task(query).circuitBreaker({
+   *   failureThreshold: 5,
+   *   successThreshold: 2,
+   *   resetTimeout: 30000
+   * })
+   */
+  circuitBreaker(options: CircuitBreakerOptions): Task<TArgs, TReturn, TLocked | 'circuitBreaker'>
+}
+
+/**
+ * Policy names derived from the keys of {@link TaskMethods}.
+ * Used at runtime by the guard and at the type level by
+ * the `Omit` inside `Task` to prevent double configuration.
+ */
+export type PolicyName = keyof TaskMethods<unknown[], unknown, never>
+
+/**
  * A callable function extended with resilience policies via a fluent API.
  *
  * The returned value is both callable (preserving the original signature)
@@ -72,87 +162,7 @@ export interface CircuitBreakerOptions {
  * @typeParam TLocked - Policy names that have already been configured
  *                       (managed internally, never set by the user).
  */
-export type Task<TArgs extends unknown[], TReturn, TLocked extends string = never> = ((
+export type Task<TArgs extends unknown[], TReturn, TLocked extends PolicyName = never> = ((
   ...args: TArgs
 ) => Promise<TReturn>) &
-  Omit<
-    {
-      /**
-       * Retry the wrapped function on failure.
-       *
-       * @param attempts - Shortcut for `{ attempts }`.
-       *
-       * @example
-       * task(fn).retry(3)
-       */
-      retry(attempts: number): Task<TArgs, TReturn, TLocked | 'retry'>
-
-      /**
-       * Retry the wrapped function on failure with full options.
-       *
-       * @param options - Retry configuration (attempts, backoff, jitter, delay).
-       *
-       * @example
-       * task(fn).retry({
-       *   attempts: 3,
-       *   backoff: "exponential",
-       *   jitter: true
-       * })
-       */
-      retry(options: RetryOptions): Task<TArgs, TReturn, TLocked | 'retry'>
-
-      /**
-       * Reject if the wrapped function does not complete in time.
-       *
-       * @param ms - Timeout in milliseconds.
-       * @throws {@link TaskTimeoutError} when the time elapses.
-       *
-       * @example
-       * task(fn).timeout(5000)
-       */
-      timeout(ms: number): Task<TArgs, TReturn, TLocked | 'timeout'>
-
-      /**
-       * Provide an alternative function to run when the main one fails.
-       *
-       * @param fn - Fallback function (receives the same arguments).
-       *
-       * @example
-       * task(riskyOp).fallback(() => defaultValue)
-       */
-      fallback<TFallback>(
-        fn: (...args: TArgs) => TFallback
-      ): Task<TArgs, TReturn | Awaited<TFallback>, TLocked | 'fallback'>
-
-      /**
-       * Wait a fixed amount of time before executing the wrapped function.
-       *
-       * @param ms - Delay in milliseconds.
-       *
-       * @example
-       * task(fn).delay(1000)
-       */
-      delay(ms: number): Task<TArgs, TReturn, TLocked | 'delay'>
-
-      /**
-       * Protect the wrapped function with a circuit breaker.
-       *
-       * Prevents repeated calls to an unhealthy service by tracking
-       * failures. States: closed → open → half-open → closed.
-       *
-       * @param options - Circuit breaker configuration.
-       * @throws {@link CircuitBreakerOpenError} when the circuit is open.
-       *
-       * @example
-       * task(query).circuitBreaker({
-       *   failureThreshold: 5,
-       *   successThreshold: 2,
-       *   resetTimeout: 30000
-       * })
-       */
-      circuitBreaker(
-        options: CircuitBreakerOptions
-      ): Task<TArgs, TReturn, TLocked | 'circuit-breaker'>
-    },
-    TLocked
-  >
+  Omit<TaskMethods<TArgs, TReturn, TLocked>, TLocked>

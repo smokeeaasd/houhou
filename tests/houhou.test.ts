@@ -4,18 +4,29 @@ import type { Task } from '../src/types'
 
 // type-level tests (validated by tsc, skipped in runtime)
 describe.skip('type-lock', () => {
-  it('prevents double configuration', () => {
+  it('prevents double configuration of any policy', () => {
     const fn = async (x: number) => x
-    const t = task(fn).retry({ attempts: 3 }).timeout(1000)
+    const t = task(fn)
+      .retry({ attempts: 3 })
+      .timeout(1000)
+      .fallback(() => 0)
+      .delay(10)
+      .circuitBreaker({ failureThreshold: 5, successThreshold: 2, resetTimeout: 30000 })
 
-    // @ts-expect-error — 'retry' is locked
+    // @ts-expect-error
     t.retry({ attempts: 2 })
 
-    // @ts-expect-error — 'timeout' is locked
+    // @ts-expect-error
     t.timeout(500)
 
-    t.fallback(() => 0)
-    t.delay(10)
+    // @ts-expect-error
+    t.fallback(() => 1)
+
+    // @ts-expect-error
+    t.delay(20)
+
+    // @ts-expect-error
+    t.circuitBreaker({ failureThreshold: 3, successThreshold: 1, resetTimeout: 10000 })
   })
 })
 

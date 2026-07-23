@@ -1,11 +1,9 @@
-import type { CircuitBreakerOptions, RetryOptions, Task } from './types'
+import type { CircuitBreakerOptions, PolicyName, RetryOptions, Task } from './types'
 import { withRetry } from './policies/retry'
 import { withTimeout } from './policies/timeout'
 import { withFallback } from './policies/fallback'
 import { withDelay } from './policies/delay'
 import { withCircuitBreaker } from './policies/circuit-breaker'
-
-type PolicyName = 'retry' | 'timeout' | 'fallback' | 'delay' | 'circuit-breaker'
 
 function guard(locked: Set<PolicyName>, name: PolicyName): void {
   if (locked.has(name)) {
@@ -49,7 +47,7 @@ function createTask<TArgs extends unknown[], TReturn>(
         return createTask(withDelay(fn, ms), locked)
       },
       circuitBreaker(options: CircuitBreakerOptions): Task<TArgs, Awaited<TReturn>> {
-        guard(locked, 'circuit-breaker')
+        guard(locked, 'circuitBreaker')
         return createTask(withCircuitBreaker(fn, options), locked)
       }
     }
